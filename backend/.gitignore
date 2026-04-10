@@ -3,6 +3,5 @@ __pycache__/
 *.pyc
 data/uploads/
 data/app_data.json
-*.csv
-*.xlsx
+!data/test_data/
 .env

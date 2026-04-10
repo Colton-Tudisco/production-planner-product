@@ -1,10 +1,20 @@
+import os
 import pandas as pd
 import json
 from datetime import datetime, date
 from pathlib import Path
 
+DEV_MODE = os.environ.get("DEV_MODE", "true").lower() == "true"
+
 UPLOAD_DIR = Path(__file__).parent / "data" / "uploads"
+TEST_DIR    = Path(__file__).parent / "data" / "test_data"
 OUTPUT_FILE = Path(__file__).parent / "data" / "app_data.json"
+
+def get_file(name):
+    """Return test_data path in DEV_MODE, otherwise uploads path."""
+    if DEV_MODE:
+        return TEST_DIR / name
+    return UPLOAD_DIR / name
 
 
 def safe_val(v):
@@ -22,31 +32,31 @@ def process_all():
 
     # ── LOAD FILES ────────────────────────────────────────────────────────────
     try:
-        df_so = pd.read_excel(UPLOAD_DIR / "Open_Sales_Orders.xlsx")
+        df_so = pd.read_excel(get_file("Open_Sales_Orders.xlsx"))
     except Exception as e:
         errors.append(f"Sales Orders: {e}")
         df_so = pd.DataFrame()
 
     try:
-        df_inv = pd.read_excel(UPLOAD_DIR / "all_inventory_on_hand.xlsx")
+        df_inv = pd.read_excel(get_file("all_inventory_on_hand.xlsx"))
     except Exception as e:
         errors.append(f"Inventory: {e}")
         df_inv = pd.DataFrame()
 
     try:
-        df_bom = pd.read_excel(UPLOAD_DIR / "BOM.xlsx")
+        df_bom = pd.read_excel(get_file("BOM.xlsx"))
     except Exception as e:
         errors.append(f"BOM: {e}")
         df_bom = pd.DataFrame()
 
     try:
-        df_po = pd.read_excel(UPLOAD_DIR / "Open_POs.xlsx")
+        df_po = pd.read_excel(get_file("Open_POs.xlsx"))    
     except Exception as e:
         errors.append(f"Open POs: {e}")
         df_po = pd.DataFrame()
 
     try:
-        df_hist = pd.read_csv(UPLOAD_DIR / "Closed_POs.csv", encoding="latin-1")
+        df_hist = pd.read_csv(get_file("Closed_POs.csv"), encoding="latin-1")
     except Exception as e:
         errors.append(f"Closed POs: {e}")
         df_hist = pd.DataFrame()

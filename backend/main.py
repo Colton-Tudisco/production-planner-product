@@ -2,13 +2,25 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from contextlib import asynccontextmanager
 from pathlib import Path
 import shutil
 import json
+import os
 
 from data_processor import process_all, OUTPUT_FILE, UPLOAD_DIR
 
-app = FastAPI(title="SEM Production Planner API")
+@asynccontextmanager
+async def lifespan(app):
+    if os.environ.get("DEV_MODE", "true").lower() == "true":
+        try:
+            process_all()
+            print("✅ DEV_MODE: Auto-processed test data on startup")
+        except Exception as e:
+            print(f"⚠️  DEV_MODE: Auto-process failed: {e}")
+    yield
+
+app = FastAPI(title="SEM Production Planner API", lifespan=lifespan)
 
 # Allow React frontend to talk to this backend
 app.add_middleware(
