@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+data/uploads/
+data/app_data.json
+*.csv
+*.xlsx
+.env
