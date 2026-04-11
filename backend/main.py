@@ -15,9 +15,9 @@ async def lifespan(app):
     if os.environ.get("DEV_MODE", "true").lower() == "true":
         try:
             process_all()
-            print("✅ DEV_MODE: Auto-processed test data on startup")
+            print("DEV_MODE: Auto-processed test data on startup")
         except Exception as e:
-            print(f"⚠️  DEV_MODE: Auto-process failed: {e}")
+            print(f"DEV_MODE: Auto-process failed: {e}")
     yield
 
 app = FastAPI(title="SEM Production Planner API", lifespan=lifespan)
@@ -76,12 +76,18 @@ def process_data():
 @app.get("/api/status")
 def status():
     """Check which data files are present"""
+    from data_processor import TEST_DIR, DEV_MODE as dev_mode
+    def file_exists(filename):
+        if dev_mode and (TEST_DIR / filename).exists():
+            return True
+        return (UPLOAD_DIR / filename).exists()
+
     files = {
-        "sales_orders": (UPLOAD_DIR / "Open_Sales_Orders.xlsx").exists(),
-        "inventory": (UPLOAD_DIR / "all_inventory_on_hand.xlsx").exists(),
-        "bom": (UPLOAD_DIR / "BOM.xlsx").exists(),
-        "open_pos": (UPLOAD_DIR / "Open_POs.xlsx").exists(),
-        "closed_pos": (UPLOAD_DIR / "Closed_POs.csv").exists(),
+        "sales_orders": file_exists("Open_Sales_Orders.xlsx"),
+        "inventory": file_exists("all_inventory_on_hand.xlsx"),
+        "bom": file_exists("BOM.xlsx"),
+        "open_pos": file_exists("Open_POs.xlsx"),
+        "closed_pos": file_exists("Closed_POs.csv"),
         "processed": OUTPUT_FILE.exists(),
     }
     processed_at = None

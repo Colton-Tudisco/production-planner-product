@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Frontend (Vite)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "C:\\Users\\colto\\OneDrive\\Desktop\\Projects\\production-planner-product\\.claude\\worktrees\\magical-kowalevski\\frontend",
+      "port": 5173
+    },
+    {
+      "name": "Backend (FastAPI)",
+      "runtimeExecutable": "C:\\Users\\colto\\OneDrive\\Desktop\\Projects\\production-planner-product\\.claude\\worktrees\\magical-kowalevski\\backend\\venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--reload"],
+      "cwd": "C:\\Users\\colto\\OneDrive\\Desktop\\Projects\\production-planner-product\\.claude\\worktrees\\magical-kowalevski\\backend",
+      "port": 8000
+    }
+  ]
+}

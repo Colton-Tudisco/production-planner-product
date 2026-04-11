@@ -35,18 +35,22 @@ export default function App() {
     }
   }
 
-  const fetchData = async () => {
+  const fetchData = async (retries = 4) => {
     try {
       const res = await api.getData()
       setAppData(res.data)
       setError(null)
+      setLoading(false)
     } catch (e) {
+      if ((e.response?.status === 404 || !e.response) && retries > 0) {
+        setTimeout(() => fetchData(retries - 1), 1500)
+        return
+      }
       if (e.response?.status === 404) {
         setError('No data processed yet. Upload your Epicor exports and click Process Data.')
       } else {
         setError('Failed to load data: ' + e.message)
       }
-    } finally {
       setLoading(false)
     }
   }
