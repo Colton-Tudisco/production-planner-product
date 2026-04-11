@@ -26,6 +26,11 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
   const [search, setSearch] = useState('')
   const [dragSrc, setDragSrc] = useState(null)
   const [createdMsg, setCreatedMsg] = useState(false)
+  const [dupWarning, setDupWarning] = useState(false)
+  const [jobsOpen, setJobsOpen] = useState(true)
+  const [viewJob, setViewJob] = useState(null)
+  const [overdueOnly, setOverdueOnly] = useState(false)
+  const [editingJob, setEditingJob] = useState(null)
 
   // Parts with BOM only
   const parts = useMemo(() => {
@@ -43,10 +48,15 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
   }, [orders, bomIdx])
 
   const filteredParts = useMemo(() => {
-    if (!search) return parts
-    const q = search.toLowerCase()
-    return parts.filter(g => g.pn.toLowerCase().includes(q) || (g.pd || '').toLowerCase().includes(q))
-  }, [parts, search])
+    let r = parts
+    if (search) {
+      const q = search.toLowerCase()
+      const orderMatch = (orders || []).filter(o => String(o.OrderNum).includes(q)).map(o => o.PartNum)
+      r = r.filter(g => g.pn.toLowerCase().includes(q) || (g.pd || '').toLowerCase().includes(q) || orderMatch.includes(g.pn))
+    }
+    if (overdueOnly) r = r.filter(g => (orders || []).some(o => o.PartNum === g.pn && o.days < 0))
+    return r
+  }, [parts, search, orders, overdueOnly])
 
   const jpOrders = useMemo(() => {
     if (!selPart || !orders) return []
@@ -83,6 +93,7 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
 
   const selectPart = (pn) => {
     setSelPart(pn)
+    setViewJob(null)
     setJpWin('all')
     setJpFrom('')
     setJpTo('')
@@ -110,28 +121,42 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
 
   const createJob = () => {
     if (!selPart || !checkedOrders.length) return
-    const pd = checkedOrders[0].PartDescription
-    const id = `JOB-${String(jobs.length + 1).padStart(3, '0')}`
     const mn = (bomIdx?.[selPart] || []).map(b => ({
       raw: b.MaterialPart, desc: b.MaterialDesc, uom: b.UOM,
       needed: tm * b.QtyPer,
       oh: invIdx?.[b.MaterialPart] || 0,
       po: poIdx?.[b.MaterialPart] || 0
     }))
-    setJobs(prev => [...prev, {
-      id, pn: selPart, pd, tq, tm,
+    const updatedJob = {
+      id: editingJob ? editingJob.id : `JOB-${String(jobs.length + 1).padStart(3, '0')}`,
+      pn: selPart,
+      pd: checkedOrders[0].PartDescription,
+      tq, tm,
       orders: checkedOrders.map((o, i) => ({
         on: o.OrderNum, ol: o.OrderLine,
         qty: o.oq, uom: o.UOM,
         sd: o.ShipDateStr, cust: o.CustomerName, seq: i + 1
       })),
-      mn, ca: new Date().toLocaleString()
-    }])
+      mn, ca: editingJob ? editingJob.ca : new Date().toLocaleString()
+    }
+    if (editingJob) {
+      setJobs(prev => prev.map(j => j.id === editingJob.id ? updatedJob : j))
+      setEditingJob(null)
+    } else {
+      const alreadyExists = jobs.some(j => j.pn === selPart)
+      if (alreadyExists && !dupWarning) { setDupWarning(true); return }
+      setDupWarning(false)
+      setJobs(prev => [...prev, updatedJob])
+    }
     setCreatedMsg(true)
-    setTimeout(() => setCreatedMsg(false), 1500)
+    setTimeout(() => { setCreatedMsg(false); setSelPart(null) }, 800)
   }
 
-  const delJob = (i) => setJobs(prev => prev.filter((_, j) => j !== i))
+  const delJob = (i) => {
+    const removing = jobs[i]
+    if (viewJob?.id === removing.id) setViewJob(null)
+    setJobs(prev => prev.filter((_, j) => j !== i))
+  }
 
   if (!orders) return <div className="empty"><div className="empty-icon">⏳</div><div className="empty-title">Loading...</div></div>
 
@@ -141,58 +166,199 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
         {/* SIDEBAR */}
         <div className="jp-sidebar">
           <div className="jp-sb-title">Parts with Open Orders</div>
-          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <input
               className="si"
               style={{ width: '100%' }}
               type="text"
-              placeholder="Search part..."
+              placeholder="Search part or order #..."
               value={search}
               onChange={e => setSearch(e.target.value)}
             />
+            <button
+              className={`fb ${overdueOnly ? 'active' : ''}`}
+              style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => setOverdueOnly(p => !p)}
+            >
+              🔴 Overdue Only
+            </button>
           </div>
-          {filteredParts.length === 0 ? (
-            <div className="empty" style={{ padding: '20px' }}>
-              <div className="empty-title">No BOM parts match</div>
-              <div className="empty-sub" style={{ marginTop: '4px' }}>
-                Buy-parts → Purchased Parts tab<br />
-                No BOM + no history → ⚠ BOM Attention
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            {filteredParts.length === 0 ? (
+              <div className="empty" style={{ padding: '20px' }}>
+                <div className="empty-title">No BOM parts match</div>
+                <div className="empty-sub" style={{ marginTop: '4px' }}>
+                  Buy-parts → Purchased Parts tab<br />
+                  No BOM + no history → ⚠ BOM Attention
+                </div>
               </div>
+            ) : filteredParts.filter(g => !jobs.some(j => j.pn === g.pn)).map(g => {
+              const dot = g.tier === 'red' ? 'var(--red)' : g.tier === 'yellow' ? 'var(--yellow)' : 'var(--green)'
+              const hasJob = jobs.some(j => j.pn === g.pn)
+              return (
+                <div
+                  key={g.pn}
+                  className={`jp-part-row ${selPart === g.pn ? 'sel' : ''}`}
+                  onClick={() => selectPart(g.pn)}
+                >
+                  <div>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: '12px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: dot, flexShrink: 0 }} />
+                      {g.pn}
+                      {hasJob && (
+                        <span style={{ fontSize: '9px', background: 'var(--purple-bg)', color: 'var(--purple)', border: '1px solid var(--purple-b)', borderRadius: '3px', padding: '1px 4px' }}>
+                          JOB
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '1px' }}>
+                      {(g.pd || '').substring(0, 32)}
+                    </div>
+                  </div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>
+                    {g.cnt}x
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* CREATED JOBS IN SIDEBAR */}
+          {jobs.length > 0 && (
+            <div style={{ borderTop: '2px solid var(--border)', flexShrink: 0, maxHeight: '220px', overflowY: 'auto' }}>
+              <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--border)', fontSize: '10px', fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--purple)', background: 'var(--purple-bg)', position: 'sticky', top: 0, zIndex: 1 }}>
+                Created Jobs
+              </div>
+              {jobs.map((job, ji) => (
+                <div
+                  key={ji}
+                  className={`jp-part-row ${viewJob?.id === job.id ? 'sel' : ''}`}
+                  onClick={() => { setViewJob(job); setSelPart(null) }}
+                >
+                  <div>
+                    <div style={{ fontFamily: 'var(--mono)', fontSize: '12px', fontWeight: 500 }}>{job.id}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '1px' }}>{job.pn}</div>
+                  </div>
+                  <span style={{ fontSize: '9px', background: 'var(--purple-bg)', color: 'var(--purple)', border: '1px solid var(--purple-b)', borderRadius: '3px', padding: '1px 4px' }}>
+                    {fn(job.tq)}
+                  </span>
+                </div>
+              ))}
             </div>
-          ) : filteredParts.map(g => {
-            const dot = g.tier === 'red' ? 'var(--red)' : g.tier === 'yellow' ? 'var(--yellow)' : 'var(--green)'
-            const hasJob = jobs.some(j => j.pn === g.pn)
-            return (
-              <div
-                key={g.pn}
-                className={`jp-part-row ${selPart === g.pn ? 'sel' : ''}`}
-                onClick={() => selectPart(g.pn)}
-              >
-                <div>
-                  <div style={{ fontFamily: 'var(--mono)', fontSize: '12px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: dot, flexShrink: 0 }} />
-                    {g.pn}
-                    {hasJob && (
-                      <span style={{ fontSize: '9px', background: 'var(--purple-bg)', color: 'var(--purple)', border: '1px solid var(--purple-b)', borderRadius: '3px', padding: '1px 4px' }}>
-                        JOB
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '1px' }}>
-                    {(g.pd || '').substring(0, 32)}
-                  </div>
-                </div>
-                <div style={{ fontFamily: 'var(--mono)', fontSize: '11px', color: 'var(--text3)', whiteSpace: 'nowrap' }}>
-                  {g.cnt}x
-                </div>
-              </div>
-            )
-          })}
+          )}
         </div>
 
         {/* BUILDER */}
         <div className="jp-builder">
-          {!selPart ? (
+          {viewJob ? (
+            <div>
+              {/* View Job Header */}
+              <div style={{ padding: '11px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontFamily: 'var(--mono)', fontSize: '14px', fontWeight: 500 }}>{viewJob.id}</span>
+                    <span className="badge b-purple">{viewJob.pn}</span>
+                    {viewJob.mn.some(m => m.needed > m.oh + m.po) ? <span className="badge b-red">Material Gap</span> : <span className="badge b-green">Material OK</span>}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text3)', marginTop: '2px' }}>{(viewJob.pd || '').substring(0, 58)}</div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => { setEditingJob(viewJob); selectPart(viewJob.pn) }}
+                    style={{ background: 'var(--blue-bg)', color: 'var(--blue)', border: '1px solid var(--blue-b)', borderRadius: '5px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--sans)' }}
+                  >
+                    ✏ Edit
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    style={{ background: 'var(--surface2)', color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: '5px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--sans)' }}
+                  >
+                    🖨 Print
+                  </button>
+                  <button
+                    onClick={() => { delJob(jobs.findIndex(j => j.id === viewJob.id)) }}
+                    style={{ background: 'var(--red-bg)', color: 'var(--red)', border: '1px solid var(--red-b)', borderRadius: '5px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--sans)' }}
+                  >
+                    🗑 Remove
+                  </button>
+                  <button
+                    onClick={() => setViewJob(null)}
+                    style={{ background: 'var(--surface2)', color: 'var(--text2)', border: '1px solid var(--border)', borderRadius: '5px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--sans)' }}
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+              </div>
+
+              {/* Order table */}
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ background: 'var(--surface2)' }}>
+                    {['Seq', 'Order', 'Customer', 'Qty', 'Ship By'].map(t => (
+                      <td key={t} style={{ padding: '7px 11px', fontSize: '10px', fontWeight: 600, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>{t}</td>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {viewJob.orders.map((o, oi) => (
+                    <tr key={oi} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '7px 11px' }}><span className="seq-num">{o.seq}</span></td>
+                      <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{o.on}-{o.ol}</td>
+                      <td style={{ padding: '7px 11px', color: 'var(--text2)' }}>{(o.cust || '').substring(0, 28)}</td>
+                      <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)' }}>{fn(o.qty)} {o.uom || ''}</td>
+                      <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{o.sd}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {/* Material breakdown */}
+              {viewJob.mn.length > 0 && (
+                <div style={{ padding: '11px 14px', borderTop: '1px solid var(--border)', background: 'var(--surface2)' }}>
+                  <div style={{ fontSize: '10px', fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: '8px' }}>
+                    Raw Material ({fn(viewJob.tm)} units to produce)
+                  </div>
+                  <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ color: 'var(--text3)', fontSize: '10px', fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                        <td style={{ padding: '2px 8px 5px 0' }}>Material</td>
+                        <td style={{ padding: '2px 8px', textAlign: 'right' }}>Need</td>
+                        <td style={{ padding: '2px 8px', textAlign: 'right' }}>On Hand</td>
+                        <td style={{ padding: '2px 8px', textAlign: 'right' }}>Open PO</td>
+                        <td style={{ padding: '2px 8px', textAlign: 'right' }}>Net</td>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {viewJob.mn.map((m, i) => {
+                        const net = m.needed - m.oh - m.po
+                        return (
+                          <tr key={i}>
+                            <td style={{ padding: '3px 8px 3px 0', fontFamily: 'var(--mono)' }}>
+                              {m.raw} <span style={{ color: 'var(--text3)' }}>{(m.desc || '').substring(0, 32)}</span>
+                            </td>
+                            <td style={{ padding: '3px 8px', textAlign: 'right', fontFamily: 'var(--mono)' }}>{fd(m.needed)} {m.uom || ''}</td>
+                            <td style={{ padding: '3px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: m.oh > 0 ? 'var(--text2)' : 'var(--text3)' }}>{fd(m.oh)}</td>
+                            <td style={{ padding: '3px 8px', textAlign: 'right', fontFamily: 'var(--mono)', color: m.po > 0 ? 'var(--text2)' : 'var(--text3)' }}>{fd(m.po)}</td>
+                            <td style={{ padding: '3px 8px', textAlign: 'right', fontFamily: 'var(--mono)', fontWeight: 500, color: net > 0 ? 'var(--red)' : 'var(--green)' }}>
+                              {net > 0 ? `+${fd(net)} SHORT` : `${fd(Math.abs(net))} OK`}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Summary */}
+              <div className="jp-summary">
+                <div><div className="jp-sum-label">Orders</div><div className="jp-sum-val">{viewJob.orders.length}</div></div>
+                <div><div className="jp-sum-label">Total Qty</div><div className="jp-sum-val">{fn(viewJob.tq)}</div></div>
+                <div><div className="jp-sum-label">To Produce</div><div className="jp-sum-val">{fn(viewJob.tm)}</div></div>
+                <div><div className="jp-sum-label">Created</div><div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>{viewJob.ca}</div></div>
+              </div>
+            </div>
+          ) : !selPart ? (
             <div className="empty" style={{ padding: '44px 20px' }}>
               <div className="empty-icon">🔧</div>
               <div className="empty-title">Select a part to build a job</div>
@@ -333,81 +499,26 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
                   <div className="jp-sum-label">Material</div>
                   <div className={`jp-sum-val ${hasGap ? 'red' : 'green'}`}>{hasGap ? '⚠ GAP' : '✓ OK'}</div>
                 </div>
-                <button
-                  className="create-job-btn"
-                  onClick={createJob}
-                  disabled={checkedOrders.length === 0}
-                >
-                  {createdMsg ? '✓ Created!' : '+ Create Job'}
-                </button>
+                <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                  {dupWarning && (
+                    <div style={{ fontSize: '11px', color: 'var(--yellow)', background: 'var(--yellow-bg)', border: '1px solid var(--yellow-b)', borderRadius: '4px', padding: '5px 10px', textAlign: 'right' }}>
+                      ⚠ A job for <strong>{selPart}</strong> already exists. Click again to create a duplicate.
+                    </div>
+                  )}
+                  <button
+                    className="create-job-btn"
+                    onClick={createJob}
+                    disabled={checkedOrders.length === 0}
+                    style={{ marginLeft: 0 }}
+                  >
+                    {createdMsg ? '✓ Saved!' : editingJob ? '💾 Save Job' : dupWarning ? '⚠ Confirm Duplicate' : '+ Create Job'}
+                  </button>
+                </div>
               </div>
             </>
           )}
         </div>
       </div>
-
-      {/* CREATED JOBS */}
-      {jobs.length > 0 && (
-        <div style={{ marginTop: '18px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: '10px' }}>
-            Created Jobs
-          </div>
-          {jobs.map((job, ji) => {
-            const gap = job.mn.some(m => m.needed > m.oh + m.po)
-            return (
-              <div key={ji} className="job-card">
-                <div className="job-card-head">
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontFamily: 'var(--mono)', fontSize: '13px', fontWeight: 500 }}>{job.id}</span>
-                      <span className="badge b-purple">{job.pn}</span>
-                      {gap ? <span className="badge b-red">Material Gap</span> : <span className="badge b-green">Material OK</span>}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text3)', marginTop: '2px' }}>
-                      {(job.pd || '').substring(0, 50)} · {fn(job.tq)} pcs · {job.orders.length} order{job.orders.length > 1 ? 's' : ''} · {job.ca}
-                    </div>
-                  </div>
-                  <button className="del-btn" onClick={() => delJob(ji)}>Remove</button>
-                </div>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                  <thead>
-                    <tr style={{ background: 'var(--surface2)' }}>
-                      {['Seq', 'Order', 'Customer', 'Qty', 'Ship By'].map(t => (
-                        <td key={t} style={{ padding: '6px 11px', fontSize: '10px', fontWeight: 600, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)' }}>{t}</td>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {job.orders.map((o, oi) => (
-                      <tr key={oi}>
-                        <td style={{ padding: '7px 11px' }}>
-                          <span className="seq-num">{o.seq}</span>
-                        </td>
-                        <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{o.on}-{o.ol}</td>
-                        <td style={{ padding: '7px 11px', color: 'var(--text2)' }}>{(o.cust || '').substring(0, 28)}</td>
-                        <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)' }}>{fn(o.qty)} {o.uom || ''}</td>
-                        <td style={{ padding: '7px 11px', fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{o.sd}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {job.mn.length > 0 && (
-                  <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border)', background: 'var(--surface2)', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                    {job.mn.map((m, mi) => {
-                      const net = m.needed - m.oh - m.po
-                      return (
-                        <span key={mi} style={{ fontSize: '11px', fontFamily: 'var(--mono)', color: net > 0 ? 'var(--red)' : 'var(--text3)' }}>
-                          <strong style={{ color: net > 0 ? 'var(--red)' : 'var(--text2)' }}>{m.raw}</strong>: {fd(m.needed)} {m.uom || ''}{net > 0 ? ` | short ${fd(net)}` : '  ✓'}
-                        </span>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }
