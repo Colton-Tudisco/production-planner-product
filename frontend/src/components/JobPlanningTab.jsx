@@ -57,6 +57,7 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
     const grps = {}
     ;(orders || []).forEach(o => {
       if (!bomIdx?.[o.PartNum]) return
+      if (o.toMake <= 0) return  // skip orders fully covered by FG on hand
       if (!grps[o.PartNum]) grps[o.PartNum] = { pn: o.PartNum, pd: o.PartDescription, cnt: 0, tier: 'green' }
       grps[o.PartNum].cnt++
       if (o.tier === 'red') grps[o.PartNum].tier = 'red'
