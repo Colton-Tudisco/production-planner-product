@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import { api } from '../utils/api'
 
 function fn(n) { return Math.round(n).toLocaleString() }
 function fd(n) {
@@ -23,6 +24,7 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
   const [jpFulfill, setJpFulfill] = useState('fifo')
   const [jpChk, setJpChk] = useState({})
   const [jobs, setJobs] = useState([])
+  const [jobsLoaded, setJobsLoaded] = useState(false)
   const [search, setSearch] = useState('')
   const [dragSrc, setDragSrc] = useState(null)
   const [createdMsg, setCreatedMsg] = useState(false)
@@ -31,6 +33,24 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
   const [viewJob, setViewJob] = useState(null)
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [editingJob, setEditingJob] = useState(null)
+
+  useEffect(() => {
+  api.getJobs().then(res => {
+    const loaded = res.data.map(j => ({
+      id: j.job_id,
+      pn: j.part_num,
+      pd: j.part_description,
+      tq: j.total_qty,
+      tm: j.to_make,
+      orders: j.orders,
+      mn: j.materials,
+      ca: j.created_at,
+      notes: j.notes || ''
+    }))
+    setJobs(loaded)
+    setJobsLoaded(true)
+  }).catch(() => setJobsLoaded(true))
+}, [])
 
   // Parts with BOM only
   const parts = useMemo(() => {
@@ -119,43 +139,60 @@ export default function JobPlanningTab({ orders, bomIdx, invIdx, poIdx }) {
     setJpChk(newChk)
   }
 
-  const createJob = () => {
+  const createJob = async () => {
     if (!selPart || !checkedOrders.length) return
+    const alreadyExists = jobs.some(j => j.pn === selPart)
+    if (alreadyExists && !dupWarning) {
+      setDupWarning(true)
+      return
+    }
+    setDupWarning(false)
+    const pd = checkedOrders[0].PartDescription
+    const id = `JOB-${String(jobs.length + 1).padStart(3, '0')}`
     const mn = (bomIdx?.[selPart] || []).map(b => ({
       raw: b.MaterialPart, desc: b.MaterialDesc, uom: b.UOM,
       needed: tm * b.QtyPer,
       oh: invIdx?.[b.MaterialPart] || 0,
       po: poIdx?.[b.MaterialPart] || 0
     }))
-    const updatedJob = {
-      id: editingJob ? editingJob.id : `JOB-${String(jobs.length + 1).padStart(3, '0')}`,
-      pn: selPart,
-      pd: checkedOrders[0].PartDescription,
-      tq, tm,
+    const newJob = {
+      id, pn: selPart, pd, tq, tm,
       orders: checkedOrders.map((o, i) => ({
         on: o.OrderNum, ol: o.OrderLine,
         qty: o.oq, uom: o.UOM,
         sd: o.ShipDateStr, cust: o.CustomerName, seq: i + 1
       })),
-      mn, ca: editingJob ? editingJob.ca : new Date().toLocaleString()
+      mn, ca: new Date().toLocaleString(),
+      notes: ''
     }
-    if (editingJob) {
-      setJobs(prev => prev.map(j => j.id === editingJob.id ? updatedJob : j))
-      setEditingJob(null)
-    } else {
-      const alreadyExists = jobs.some(j => j.pn === selPart)
-      if (alreadyExists && !dupWarning) { setDupWarning(true); return }
-      setDupWarning(false)
-      setJobs(prev => [...prev, updatedJob])
-    }
+    setJobs(prev => [...prev, newJob])
     setCreatedMsg(true)
-    setTimeout(() => { setCreatedMsg(false); setSelPart(null) }, 800)
+    setTimeout(() => setCreatedMsg(false), 1500)
+    try {
+      await api.saveJob({
+        job_id: id,
+        part_num: selPart,
+        part_description: pd,
+        total_qty: tq,
+        to_make: tm,
+        orders: newJob.orders,
+        materials: mn,
+        status: 'active',
+        notes: ''
+      })
+    } catch (e) {
+      console.error('Failed to save job to Supabase:', e)
+    }
   }
 
-  const delJob = (i) => {
-    const removing = jobs[i]
-    if (viewJob?.id === removing.id) setViewJob(null)
+  const delJob = async (i) => {
+    const job = jobs[i]
     setJobs(prev => prev.filter((_, j) => j !== i))
+    try {
+      await api.deleteJob(job.id)
+    } catch (e) {
+      console.error('Failed to delete job from Supabase:', e)
+    }
   }
 
   if (!orders) return <div className="empty"><div className="empty-icon">⏳</div><div className="empty-title">Loading...</div></div>

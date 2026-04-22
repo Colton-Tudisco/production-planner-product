@@ -203,6 +203,7 @@ export default function App() {
         data={appData?.bomAttention}
         open={attnOpen}
         onClose={() => setAttnOpen(false)}
+        onOverride={handleRefresh}
       />
     </div>
   )

@@ -4,6 +4,12 @@ import json
 from datetime import datetime, date
 from pathlib import Path
 
+try:
+    from supabase_client import supabase
+    SUPABASE_ENABLED = True
+except Exception:
+    SUPABASE_ENABLED = False
+
 DEV_MODE = os.environ.get("DEV_MODE", "true").lower() == "true"
 
 UPLOAD_DIR = Path(__file__).parent / "data" / "uploads"
@@ -176,8 +182,28 @@ def process_all():
     bom_parents = set(r["ParentPart"] for r in bom_records)
     po_hist_parts = set(r["PartNum"] for r in ph_records)
 
+    # Load overrides from Supabase
+    overrides = {}  # part_num -> override_type
+    if SUPABASE_ENABLED:
+        try:
+            res = supabase.table("part_overrides").select("part_num,override_type").execute()
+            for row in res.data:
+                overrides[row["part_num"]] = row["override_type"]
+        except Exception as e:
+            print(f"Warning: Could not load overrides from Supabase: {e}")
+
+    # Apply overrides before classification
+    for pn, otype in overrides.items():
+        if otype == "purchased":
+            bom_parents.discard(pn)       # remove from BOM-driven if present
+            po_hist_parts.add(pn)          # force into purchased
+        elif otype == "bom_driven":
+            po_hist_parts.discard(pn)      # remove from purchased if present
+            bom_parents.add(pn)            # force into BOM-driven
+        # "hidden" is handled below
+
     no_bom_purchased = (so_parts - bom_parents) & po_hist_parts
-    needs_bom_attn = (so_parts - bom_parents) - po_hist_parts
+    needs_bom_attn = ((so_parts - bom_parents) - po_hist_parts) - set(p for p,t in overrides.items() if t == "hidden")
 
     ph_idx = {r["PartNum"]: r for r in ph_records}
     so_by_part = {}
@@ -248,6 +274,103 @@ def process_all():
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_FILE, "w") as f:
         json.dump(output, f, separators=(",", ":"), default=str)
+
+    # ── WRITE TO SUPABASE ─────────────────────────────────────────────────────
+    if SUPABASE_ENABLED:
+        try:
+            # Helper to chunk large lists (Supabase has a row limit per request)
+            def chunks(lst, n=500):
+                for i in range(0, len(lst), n):
+                    yield lst[i:i+n]
+
+            # Sales orders — delete all and reinsert
+            supabase.table("sales_orders").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            so_rows = [{
+                "order_num": str(r["OrderNum"]),
+                "order_line": str(r["OrderLine"]),
+                "order_rel": str(r.get("OrderRel", "")),
+                "part_num": r["PartNum"],
+                "part_description": r.get("PartDescription", ""),
+                "remaining_qty": r["RemainingQty"],
+                "ship_date_str": r["ShipDateStr"],
+                "cust_id": r.get("CustID", ""),
+                "customer_name": r.get("CustomerName", ""),
+                "uom": r.get("UOM", "")
+            } for r in so_records]
+            for chunk in chunks(so_rows):
+                supabase.table("sales_orders").insert(chunk).execute()
+
+            # Inventory — upsert by part_num
+            inv_rows = [{
+                "part_num": r["PartNum"],
+                "description": r.get("Description", ""),
+                "class_desc": r.get("ClassDesc", ""),
+                "on_hand": r.get("OnHand", 0),
+                "uom": r.get("UOM", "")
+            } for r in inv_records]
+            for chunk in chunks(inv_rows):
+                supabase.table("inventory").upsert(chunk, on_conflict="part_num").execute()
+
+            # BOM — delete all and reinsert
+            supabase.table("bom").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            bom_rows = [{
+                "parent_part": r["ParentPart"],
+                "material_part": r["MaterialPart"],
+                "material_desc": r.get("MaterialDesc", ""),
+                "qty_per": r.get("QtyPer", 0),
+                "uom": r.get("UOM", "")
+            } for r in bom_records]
+            for chunk in chunks(bom_rows):
+                supabase.table("bom").insert(chunk).execute()
+
+            # Open POs — delete all and reinsert
+            supabase.table("open_pos").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            po_rows = [{
+                "part_num": r["PartNum"],
+                "total_open_qty": r.get("TotalOpenQty", 0),
+                "description": r.get("Description", ""),
+                "earliest_due_str": r.get("EarliestDueStr", ""),
+                "latest_due_str": r.get("LatestDueStr", ""),
+                "supplier_name": r.get("SupplierName", ""),
+                "uom": r.get("UOM", "")
+            } for r in po_records]
+            for chunk in chunks(po_rows):
+                supabase.table("open_pos").insert(chunk).execute()
+
+            # Purchased parts — upsert by part_num
+            pp_rows = [{
+                "part_num": r["PartNum"],
+                "description": r.get("Description", ""),
+                "last_po_date": r.get("LastPODate", ""),
+                "days_since_last_po": r.get("DaysSinceLastPO"),
+                "last_supplier": r.get("LastSupplier", ""),
+                "last_unit_price": r.get("LastUnitPrice"),
+                "uom": r.get("UOM", ""),
+                "po_count": r.get("POCount", 0),
+                "total_qty_ordered": r.get("TotalQtyOrdered", 0),
+                "open_orders": r.get("OpenOrders", 0),
+                "total_open_qty": r.get("TotalOpenQty", 0),
+                "earliest_due": r.get("EarliestDue", ""),
+                "stale": r.get("Stale", False)
+            } for r in purchased_records]
+            for chunk in chunks(pp_rows):
+                supabase.table("purchased_parts").upsert(chunk, on_conflict="part_num").execute()
+
+            # BOM attention — upsert by part_num
+            attn_rows = [{
+                "part_num": r["PartNum"],
+                "description": r.get("Description", ""),
+                "open_orders": r.get("OpenOrders", 0),
+                "total_open_qty": r.get("TotalOpenQty", 0),
+                "earliest_due": r.get("EarliestDue", ""),
+                "customers": r.get("Customers", [])
+            } for r in attn_records]
+            for chunk in chunks(attn_rows):
+                supabase.table("bom_attention").upsert(chunk, on_conflict="part_num").execute()
+
+        except Exception as e:
+            errors.append(f"Supabase write error: {e}")
+            print(f"Supabase write error: {e}")
 
     return {
         "success": True,

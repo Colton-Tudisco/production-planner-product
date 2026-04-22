@@ -19,7 +19,20 @@ export const api = {
   },
 
   // Trigger data processing
+  // Trigger data processing
   processData: () => axios.post(`${BASE}/process`),
+
+// Overrides (Supabase-backed)
+  upsertOverride: (partNum, overrideType, note = '') =>
+    axios.post(`${BASE}/overrides`, { part_num: partNum, override_type: overrideType, note }),
+
+  deleteOverride: (partNum) =>
+    axios.delete(`${BASE}/overrides/${partNum}`),
+
+  // Jobs (Supabase-backed)
+  getJobs: () => axios.get(`${BASE}/jobs`),
+  saveJob: (job) => axios.post(`${BASE}/jobs`, job),
+  deleteJob: (jobId) => axios.delete(`${BASE}/jobs/${jobId}`),
 }
 
 export const FILE_TYPES = {
